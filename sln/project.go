@@ -87,7 +87,7 @@ func NewProject(path string) (Project, error) {
 	return pro, nil
 }
 
-//return include, definition,error
+// return include, definition,error
 func (pro *Project) FindConfig(conf string) (string, string, error) {
 	var cfgList []ProjectConfiguration
 	for _, v := range pro.ItemGroup {
