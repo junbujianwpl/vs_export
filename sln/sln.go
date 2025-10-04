@@ -75,10 +75,20 @@ func (sln *Sln) CompileCommandsJson(conf string) ([]CompileCommand, error) {
 			item.Dir = pro.ProjectDir
 			item.File = f
 
-			inc, def, err := pro.FindConfig(conf)
+			// 使用增强的配置查找函数
+			inc, def, additionalOpts, usingDirs, err := pro.FindConfigEnhanced(conf)
 			if err != nil {
-				return cmdList, err
+				// 如果增强函数失败，回退到原始函数
+				inc, def, err = pro.FindConfig(conf)
+				if err != nil {
+					return cmdList, err
+				}
 			}
+
+			// 收集ItemGroup中的额外配置
+			extraInc, extraDef, extraOpt := pro.FindItemGroupConfigs(conf)
+
+			// 处理SolutionDir环境变量替换
 			willReplaceEnv := map[string]string{
 				"$(SolutionDir)": sln.SolutionDir,
 			}
@@ -86,16 +96,60 @@ func (sln *Sln) CompileCommandsJson(conf string) ([]CompileCommand, error) {
 				if strings.Contains(inc, k) {
 					inc = strings.Replace(inc, k, v, -1)
 				}
+				if strings.Contains(def, k) {
+					def = strings.Replace(def, k, v, -1)
+				}
+				if strings.Contains(additionalOpts, k) {
+					additionalOpts = strings.Replace(additionalOpts, k, v, -1)
+				}
+				if strings.Contains(usingDirs, k) {
+					usingDirs = strings.Replace(usingDirs, k, v, -1)
+				}
+				// 处理额外配置的环境变量替换
+				if strings.Contains(extraInc, k) {
+					extraInc = strings.Replace(extraInc, k, v, -1)
+				}
+				if strings.Contains(extraDef, k) {
+					extraDef = strings.Replace(extraDef, k, v, -1)
+				}
+				if strings.Contains(extraOpt, k) {
+					extraOpt = strings.Replace(extraOpt, k, v, -1)
+				}
 			}
-			def = RemoveBadDefinition(def)
-			def = preappend(def, "-D")
 
-			inc = RemoveBadInclude(inc)
-			inc = preappend(inc, "-I")
+			// 合并所有include目录和定义
+			allIncludeDirs := MergeIncludeDirectories(inc, usingDirs, extraInc)
+			allDefs := MergeIncludeDirectories(def, extraDef)
+			allOpts := MergeIncludeDirectories(additionalOpts, extraOpt)
 
-			cmd := "clang-cl.exe " + def + " " + inc + " -c " + f
-			item.Cmd = cmd
+			// 处理Conan等包管理器路径
+			allIncludeDirs = ProcessConanPaths(allIncludeDirs)
 
+			// 清理和格式化参数
+			allDefs = RemoveBadDefinition(allDefs)
+			allDefs = preappend(allDefs, "-D")
+
+			allIncludeDirs = RemoveBadInclude(allIncludeDirs)
+			allIncludeDirs = preappend(allIncludeDirs, "-I")
+
+			// 处理额外编译选项
+			allOpts = strings.TrimSpace(allOpts)
+
+			// 构建完整的编译命令
+			var cmdParts []string
+			cmdParts = append(cmdParts, "clang-cl.exe")
+			if strings.TrimSpace(allDefs) != "" {
+				cmdParts = append(cmdParts, strings.TrimSpace(allDefs))
+			}
+			if strings.TrimSpace(allIncludeDirs) != "" {
+				cmdParts = append(cmdParts, strings.TrimSpace(allIncludeDirs))
+			}
+			if allOpts != "" {
+				cmdParts = append(cmdParts, allOpts)
+			}
+			cmdParts = append(cmdParts, "-c", f)
+
+			item.Cmd = strings.Join(cmdParts, " ")
 			cmdList = append(cmdList, item)
 		}
 
