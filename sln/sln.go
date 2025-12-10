@@ -19,27 +19,45 @@ func NewSln(path string) (Sln, error) {
 	var sln Sln
 	var err error
 
-	sln.SolutionDir, err = filepath.Abs(path)
-	sln.SolutionDir = filepath.Dir(sln.SolutionDir)
-	if err != nil {
-		return sln, err
-	}
-	projectFiles, err := findAllProject(path)
-	if err != nil {
-		fmt.Println(err)
-		return sln, err
-	}
-	if len(projectFiles) == 0 {
-		return sln, errors.New("not found project file")
-	}
+	// 获取文件扩展名
+	ext := strings.ToLower(filepath.Ext(path))
 
-	for _, path := range projectFiles {
-		pro, err := NewProject(filepath.Join(sln.SolutionDir, path))
+	// 获取文件的绝对路径和所在目录
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return sln, err
+	}
+	sln.SolutionDir = filepath.Dir(absPath)
+
+	if ext == ".sln" {
+		// 处理解决方案文件
+		projectFiles, err := findAllProject(path)
+		if err != nil {
+			fmt.Println(err)
+			return sln, err
+		}
+		if len(projectFiles) == 0 {
+			return sln, errors.New("not found project file")
+		}
+
+		for _, projectPath := range projectFiles {
+			pro, err := NewProject(filepath.Join(sln.SolutionDir, projectPath))
+			if err != nil {
+				return sln, err
+			}
+			sln.ProjectList = append(sln.ProjectList, pro)
+		}
+	} else if ext == ".vcxproj" {
+		// 直接处理单个项目文件
+		pro, err := NewProject(absPath)
 		if err != nil {
 			return sln, err
 		}
 		sln.ProjectList = append(sln.ProjectList, pro)
+	} else {
+		return sln, fmt.Errorf("unsupported file format: %s, only .sln and .vcxproj are supported", ext)
 	}
+
 	return sln, nil
 }
 
@@ -65,6 +83,7 @@ func findAllProject(path string) ([]string, error) {
 	return list, nil
 }
 
+// 生成compile_commands.json内容
 func (sln *Sln) CompileCommandsJson(conf string) ([]CompileCommand, error) {
 	var cmdList []CompileCommand
 
@@ -117,10 +136,75 @@ func (sln *Sln) CompileCommandsJson(conf string) ([]CompileCommand, error) {
 				}
 			}
 
-			// 合并所有include目录和定义
-			allIncludeDirs := MergeIncludeDirectories(inc, usingDirs, extraInc)
-			allDefs := MergeIncludeDirectories(def, extraDef)
-			allOpts := MergeIncludeDirectories(additionalOpts, extraOpt)
+			// 合并所有include目录
+			allIncludeDirs := MergeSemicolonSeparatedLists(inc, usingDirs, extraInc)
+
+			// 添加系统include目录（基于MSVC标准路径）
+			var systemIncludeDirs []string
+			// 检查是否有Visual Studio环境变量
+			if vsInstallDir := os.Getenv("VSINSTALLDIR"); vsInstallDir != "" {
+				platformToolset := "v143" // 默认使用VS 2022的工具集
+				// 尝试从环境变量获取工具集版本
+				if toolset := os.Getenv("PlatformToolsetVersion"); toolset != "" {
+					platformToolset = toolset
+				}
+
+				// 添加MSVC标准库include目录
+				systemIncludeDirs = append(systemIncludeDirs, filepath.Join(vsInstallDir, "VC", "Tools", "MSVC", platformToolset, "include"))
+
+				// 添加Windows SDK include目录
+				if windowsSdkDir := os.Getenv("WindowsSdkDir"); windowsSdkDir != "" {
+					if windowsSdkVersion := os.Getenv("WindowsSdkVersion"); windowsSdkVersion != "" {
+						systemIncludeDirs = append(systemIncludeDirs, filepath.Join(windowsSdkDir, "Include", windowsSdkVersion, "um"))
+						systemIncludeDirs = append(systemIncludeDirs, filepath.Join(windowsSdkDir, "Include", windowsSdkVersion, "shared"))
+						systemIncludeDirs = append(systemIncludeDirs, filepath.Join(windowsSdkDir, "Include", windowsSdkVersion, "winrt"))
+						systemIncludeDirs = append(systemIncludeDirs, filepath.Join(windowsSdkDir, "Include", windowsSdkVersion, "cppwinrt"))
+					}
+				}
+			}
+
+			// 如果没有环境变量，添加默认的系统include目录位置
+			if len(systemIncludeDirs) == 0 {
+				// VS 2022默认安装路径
+				systemIncludeDirs = append(systemIncludeDirs, "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.39.33519\\include")
+				systemIncludeDirs = append(systemIncludeDirs, "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um")
+				systemIncludeDirs = append(systemIncludeDirs, "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\shared")
+				systemIncludeDirs = append(systemIncludeDirs, "C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\winrt")
+			}
+
+			// 合并系统include目录
+			if len(systemIncludeDirs) > 0 {
+				allIncludeDirs = MergeSemicolonSeparatedLists(allIncludeDirs, strings.Join(systemIncludeDirs, ";"))
+			}
+
+			// 合并所有宏定义
+			allDefs := MergeSemicolonSeparatedLists(def, extraDef)
+
+			// 添加默认的MSVC宏定义
+			defaultDefs := []string{
+				"WIN32",    // Windows平台
+				"_WINDOWS", // Windows应用程序
+				"_MBCS",    // 多字节字符集
+			}
+			// 根据配置添加特定宏
+			if strings.Contains(strings.ToLower(conf), "debug") {
+				defaultDefs = append(defaultDefs, "_DEBUG", "DEBUG") // Debug配置
+			} else {
+				defaultDefs = append(defaultDefs, "NDEBUG") // Release配置
+			}
+			if strings.Contains(strings.ToLower(conf), "win32") {
+				defaultDefs = append(defaultDefs, "_WIN32") // 32位平台
+			} else if strings.Contains(strings.ToLower(conf), "x64") {
+				defaultDefs = append(defaultDefs, "_WIN64") // 64位平台
+			}
+
+			// 合并默认宏定义
+			if len(defaultDefs) > 0 {
+				allDefs = MergeSemicolonSeparatedLists(allDefs, strings.Join(defaultDefs, ";"))
+			}
+
+			// 合并额外编译选项
+			allOpts := MergeSemicolonSeparatedLists(additionalOpts, extraOpt)
 
 			// 处理Conan等包管理器路径
 			allIncludeDirs = ProcessConanPaths(allIncludeDirs)

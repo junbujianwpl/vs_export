@@ -18,22 +18,22 @@ type Project struct {
 	ItemGroup           []ItemGroup           `xml:"ItemGroup"`
 	ItemDefinitionGroup []ItemDefinitionGroup `xml:"ItemDefinitionGroup"`
 }
-type ItemGroup struct {
-	XMLName                  xml.Name               `xml:"ItemGroup"`
-	Label                    string                 `xml:"Label,attr"`
-	ProjectConfigurationList []ProjectConfiguration `xml:"ProjectConfiguration"`
-	ClCompileSrc             []ClCompileSrc         `xml:"ClCompile"`
-	// 支持ItemGroup中的ClCompile配置
-	ClCompileItems []ClCompileItem `xml:"ClCompile"`
-}
 
-// ItemGroup中的ClCompile元素
-type ClCompileItem struct {
+// 通用的ClCompile元素结构
+type ClCompile struct {
 	XMLName                      xml.Name `xml:"ClCompile"`
 	Include                      string   `xml:"Include,attr"`
 	AdditionalIncludeDirectories string   `xml:"AdditionalIncludeDirectories"`
 	PreprocessorDefinitions      string   `xml:"PreprocessorDefinitions"`
 	AdditionalOptions            string   `xml:"AdditionalOptions"`
+}
+
+type ItemGroup struct {
+	XMLName                  xml.Name               `xml:"ItemGroup"`
+	Label                    string                 `xml:"Label,attr"`
+	ProjectConfigurationList []ProjectConfiguration `xml:"ProjectConfiguration"`
+	// 合并两个字段为一个通用的ClCompile列表
+	ClCompileList []ClCompile `xml:"ClCompile"`
 }
 
 type ProjectConfiguration struct {
@@ -44,12 +44,13 @@ type ProjectConfiguration struct {
 }
 
 type ItemDefinitionGroup struct {
-	XMLName   xml.Name  `xml:"ItemDefinitionGroup"`
-	Condition string    `xml:"Condition,attr"`
-	ClCompile ClCompile `xml:"ClCompile"`
+	XMLName   xml.Name     `xml:"ItemDefinitionGroup"`
+	Condition string       `xml:"Condition,attr"`
+	ClCompile ClCompileDef `xml:"ClCompile"`
 }
 
-type ClCompile struct {
+// ItemDefinitionGroup中的ClCompile元素
+type ClCompileDef struct {
 	XMLName                      xml.Name `xml:"ClCompile"`
 	AdditionalIncludeDirectories string   `xml:"AdditionalIncludeDirectories"`
 	PreprocessorDefinitions      string   `xml:"PreprocessorDefinitions"`
@@ -63,10 +64,7 @@ type ClCompile struct {
 	AdditionalUsingDirectories string `xml:"AdditionalUsingDirectories"`
 }
 
-type ClCompileSrc struct {
-	XMLName xml.Name `xml:"ClCompile"`
-	Include string   `xml:"Include,attr"`
-}
+// 移除重复的ClCompileSrc结构体，使用统一的ClCompile结构
 
 type CompileCommand struct {
 	Dir  string `json:"directory"`
@@ -115,25 +113,60 @@ func (pro *Project) FindConfigEnhanced(conf string) (string, string, string, str
 			break
 		}
 	}
-	fmt.Fprintln(os.Stderr, cfgList)
-	if len(cfgList) == 0 {
-		return "", "", "", "", errors.New(pro.ProjectPath + ":not found " + conf)
+
+	// 收集所有可用配置
+	availableConfigs := []string{}
+	for _, v := range cfgList {
+		availableConfigs = append(availableConfigs, v.Include)
 	}
+
+	if len(cfgList) == 0 {
+		return "", "", "", "", fmt.Errorf("%s: no configurations found", pro.ProjectPath)
+	}
+
+	// 检查配置是否存在
 	found := false
+	var matchedConfig string
+
+	// 首先尝试完全匹配
 	for _, v := range cfgList {
 		if v.Include == conf {
 			found = true
+			matchedConfig = conf
 			break
 		}
 	}
+
+	// 如果完全匹配失败，尝试查找相同平台的其他配置
 	if !found {
-		return "", "", "", "", errors.New(pro.ProjectPath + ":not found " + conf)
+		// 解析用户请求的配置和平台
+		requestedParts := strings.Split(conf, "|")
+		if len(requestedParts) == 2 {
+			requestedPlatform := requestedParts[1]
+
+			// 查找相同平台的配置
+			for _, v := range cfgList {
+				configParts := strings.Split(v.Include, "|")
+				if len(configParts) == 2 && configParts[1] == requestedPlatform {
+					matchedConfig = v.Include
+					found = true
+					fmt.Fprintf(os.Stderr, "Warning: Configuration %s not found, using %s instead\n", conf, matchedConfig)
+					break
+				}
+			}
+		}
+	}
+
+	// 如果仍然没有找到匹配的配置，返回错误并列出可用配置
+	if !found {
+		return "", "", "", "", fmt.Errorf("%s:not found %s\nAvailable configurations: %v", pro.ProjectPath, conf, availableConfigs)
 	}
 	for _, v := range pro.ItemDefinitionGroup {
-		if strings.Contains(v.Condition, conf) {
+		// 使用匹配的配置而不是原始请求的配置
+		if strings.Contains(v.Condition, matchedConfig) {
 			cl := v.ClCompile
 
-			vlist := strings.Split(conf, "|")
+			vlist := strings.Split(matchedConfig, "|")
 			configuration := vlist[0]
 			platform := vlist[1]
 
@@ -184,25 +217,60 @@ func (pro *Project) FindConfig(conf string) (string, string, error) {
 			break
 		}
 	}
-	fmt.Fprintln(os.Stderr, cfgList)
-	if len(cfgList) == 0 {
-		return "", "", errors.New(pro.ProjectPath + ":not found " + conf)
+
+	// 收集所有可用配置
+	availableConfigs := []string{}
+	for _, v := range cfgList {
+		availableConfigs = append(availableConfigs, v.Include)
 	}
+
+	if len(cfgList) == 0 {
+		return "", "", fmt.Errorf("%s: no configurations found", pro.ProjectPath)
+	}
+
+	// 检查配置是否存在
 	found := false
+	var matchedConfig string
+
+	// 首先尝试完全匹配
 	for _, v := range cfgList {
 		if v.Include == conf {
 			found = true
+			matchedConfig = conf
 			break
 		}
 	}
+
+	// 如果完全匹配失败，尝试查找相同平台的其他配置
 	if !found {
-		return "", "", errors.New(pro.ProjectPath + ":not found " + conf)
+		// 解析用户请求的配置和平台
+		requestedParts := strings.Split(conf, "|")
+		if len(requestedParts) == 2 {
+			requestedPlatform := requestedParts[1]
+
+			// 查找相同平台的配置
+			for _, v := range cfgList {
+				configParts := strings.Split(v.Include, "|")
+				if len(configParts) == 2 && configParts[1] == requestedPlatform {
+					matchedConfig = v.Include
+					found = true
+					fmt.Fprintf(os.Stderr, "Warning: Configuration %s not found, using %s instead\n", conf, matchedConfig)
+					break
+				}
+			}
+		}
+	}
+
+	// 如果仍然没有找到匹配的配置，返回错误并列出可用配置
+	if !found {
+		return "", "", fmt.Errorf("%s:not found %s\nAvailable configurations: %v", pro.ProjectPath, conf, availableConfigs)
 	}
 	for _, v := range pro.ItemDefinitionGroup {
-		if strings.Contains(v.Condition, conf) {
+		// 使用匹配的配置而不是原始请求的配置
+		if strings.Contains(v.Condition, matchedConfig) {
 			cl := v.ClCompile
 
-			vlist := strings.Split(conf, "|")
+			vlist := strings.Split(matchedConfig, "|")
 			configuration := vlist[0]
 			platform := vlist[1]
 
@@ -248,8 +316,8 @@ func (pro *Project) FindConfig(conf string) (string, string, error) {
 func (pro *Project) FindSourceFiles() []string {
 	var fileList []string
 	for _, v := range pro.ItemGroup {
-		for _, inc := range v.ClCompileSrc {
-			fileList = append(fileList, inc.Include)
+		for _, clCompile := range v.ClCompileList {
+			fileList = append(fileList, clCompile.Include)
 		}
 	}
 	return fileList
@@ -259,22 +327,19 @@ func (pro *Project) FindSourceFiles() []string {
 func (pro *Project) FindItemGroupConfigs(conf string) (string, string, string) {
 	var extraIncludes, extraDefs, extraOpts []string
 
+	// 遍历所有ItemGroup
 	for _, itemGroup := range pro.ItemGroup {
-		for _, clCompile := range itemGroup.ClCompileItems {
-			// 检查是否匹配当前配置
-			if strings.Contains(clCompile.AdditionalIncludeDirectories, conf) ||
-				strings.Contains(clCompile.PreprocessorDefinitions, conf) ||
-				strings.Contains(clCompile.AdditionalOptions, conf) {
-
-				if strings.TrimSpace(clCompile.AdditionalIncludeDirectories) != "" {
-					extraIncludes = append(extraIncludes, clCompile.AdditionalIncludeDirectories)
-				}
-				if strings.TrimSpace(clCompile.PreprocessorDefinitions) != "" {
-					extraDefs = append(extraDefs, clCompile.PreprocessorDefinitions)
-				}
-				if strings.TrimSpace(clCompile.AdditionalOptions) != "" {
-					extraOpts = append(extraOpts, clCompile.AdditionalOptions)
-				}
+		// 遍历当前ItemGroup中的所有ClCompile项
+		for _, clCompile := range itemGroup.ClCompileList {
+			// 收集所有ClCompile项的配置
+			if strings.TrimSpace(clCompile.AdditionalIncludeDirectories) != "" {
+				extraIncludes = append(extraIncludes, clCompile.AdditionalIncludeDirectories)
+			}
+			if strings.TrimSpace(clCompile.PreprocessorDefinitions) != "" {
+				extraDefs = append(extraDefs, clCompile.PreprocessorDefinitions)
+			}
+			if strings.TrimSpace(clCompile.AdditionalOptions) != "" {
+				extraOpts = append(extraOpts, clCompile.AdditionalOptions)
 			}
 		}
 	}
@@ -316,20 +381,25 @@ func ProcessConanPaths(includeDirs string) string {
 	return includeDirs
 }
 
-// 合并多个include目录字符串
-func MergeIncludeDirectories(dirs ...string) string {
-	var allDirs []string
-	for _, dir := range dirs {
-		if strings.TrimSpace(dir) != "" {
-			// 分割分号分隔的路径
-			parts := strings.Split(dir, ";")
+// 合并多个分号分隔的字符串列表
+func MergeSemicolonSeparatedLists(lists ...string) string {
+	var allItems []string
+	for _, list := range lists {
+		if strings.TrimSpace(list) != "" {
+			// 分割分号分隔的项
+			parts := strings.Split(list, ";")
 			for _, part := range parts {
 				part = strings.TrimSpace(part)
 				if part != "" && part != "." {
-					allDirs = append(allDirs, part)
+					allItems = append(allItems, part)
 				}
 			}
 		}
 	}
-	return strings.Join(allDirs, ";")
+	return strings.Join(allItems, ";")
+}
+
+// 合并多个include目录字符串（为了保持向后兼容）
+func MergeIncludeDirectories(dirs ...string) string {
+	return MergeSemicolonSeparatedLists(dirs...)
 }

@@ -11,9 +11,9 @@ import (
 )
 
 func main() {
-	path := flag.String("s", "", "sln file path")
-	configuration := flag.String("c", "Debug|Win32",
-		"Configuration, [configuration|platform], default Debug|Win32")
+	path := flag.String("s", "", "sln or vcxproj file path")
+	configuration := flag.String("c", "Debug|x64",
+		"Configuration, [configuration|platform], default Debug|x64")
 	flag.Parse()
 
 	if *path == "" {
@@ -44,9 +44,9 @@ func usage() {
 	var echo = `Usage: %s -s <path> -c <configuration>
 
 Where:
-            -s   path                        sln filename
-            -c   configuration               project configuration,eg Debug|Win32.
-                                             default Debug|Win32
+            -s   path                        sln or vcxproj filename
+            -c   configuration               project configuration,eg Debug|x64.
+                                             default Debug|x64
 	`
 	echo = fmt.Sprintf(echo, filepath.Base(os.Args[0]))
 	fmt.Println(echo)
