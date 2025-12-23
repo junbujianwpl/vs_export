@@ -15,6 +15,8 @@ type Project struct {
 	ProjectDir          string
 	ProjectPath         string
 	XMlName             xml.Name              `xml:"Project"`
+	PropertyGroup       []PropertyGroup       `xml:"PropertyGroup"`
+	Import              []Import              `xml:"Import"`
 	ItemGroup           []ItemGroup           `xml:"ItemGroup"`
 	ItemDefinitionGroup []ItemDefinitionGroup `xml:"ItemDefinitionGroup"`
 }
@@ -72,14 +74,17 @@ type CompileCommand struct {
 	File string `json:"file"`
 }
 
-var badInclude = []string{
-	";%(AdditionalIncludeDirectories)",
-	"%(AdditionalIncludeDirectories);",
-}
-var badDef = []string{
-	";%(PreprocessorDefinitions)",
-	"%(PreprocessorDefinitions);",
-}
+var (
+	badInclude = []string{
+		";%(AdditionalIncludeDirectories)",
+		"%(AdditionalIncludeDirectories);",
+	}
+	badDef = []string{
+		";%(PreprocessorDefinitions)",
+		"%(PreprocessorDefinitions);",
+	}
+	badOpts = []string{"%(AdditionalOptions)"}
+)
 
 func NewProject(path string) (Project, error) {
 	var pro Project
@@ -115,24 +120,18 @@ func (pro *Project) FindConfigEnhanced(conf string) (string, string, string, str
 	}
 
 	// 收集所有可用配置
-	availableConfigs := []string{}
+	var availableConfigs []string
 	for _, v := range cfgList {
 		availableConfigs = append(availableConfigs, v.Include)
 	}
 
-	if len(cfgList) == 0 {
-		return "", "", "", "", fmt.Errorf("%s: no configurations found", pro.ProjectPath)
-	}
-
-	// 检查配置是否存在
+	// 查找完全匹配的配置
 	found := false
-	var matchedConfig string
-
-	// 首先尝试完全匹配
+	matchedConfig := conf
 	for _, v := range cfgList {
 		if v.Include == conf {
+			matchedConfig = v.Include
 			found = true
-			matchedConfig = conf
 			break
 		}
 	}
@@ -161,51 +160,85 @@ func (pro *Project) FindConfigEnhanced(conf string) (string, string, string, str
 	if !found {
 		return "", "", "", "", fmt.Errorf("%s:not found %s\nAvailable configurations: %v", pro.ProjectPath, conf, availableConfigs)
 	}
+
+	// 解析配置和平台
+	vlist := strings.Split(matchedConfig, "|")
+	configuration := vlist[0]
+	platform := vlist[1]
+
+	// 构建环境变量替换映射
+	willReplaceEnv := map[string]string{
+		"$(ProjectDir)":        pro.ProjectDir,
+		"$(Configuration)":     configuration,
+		"$(ConfigurationName)": configuration,
+		"$(Platform)":          platform,
+	}
+	for _, v := range os.Environ() {
+		kv := strings.SplitN(v, "=", 2)
+		if len(kv) == 2 {
+			willReplaceEnv[fmt.Sprintf("$(%s)", kv[0])] = kv[1]
+		}
+	}
+
+	// 从PropertyGroup中收集include目录
+	propertyIncludeDirs := []string{}
+	for _, v := range pro.PropertyGroup {
+		// 匹配条件
+		if v.Condition == "" || strings.Contains(v.Condition, matchedConfig) {
+			if v.AdditionalIncludeDirectories != "" {
+				propertyIncludeDirs = append(propertyIncludeDirs, v.AdditionalIncludeDirectories)
+			}
+			if v.IncludeDirectories != "" {
+				propertyIncludeDirs = append(propertyIncludeDirs, v.IncludeDirectories)
+			}
+		}
+	}
+
+	// 从ItemDefinitionGroup中收集配置
+	var include string
+	var def string
+	var additionalOpts string
+	var usingDirs string
+
 	for _, v := range pro.ItemDefinitionGroup {
 		// 使用匹配的配置而不是原始请求的配置
 		if strings.Contains(v.Condition, matchedConfig) {
 			cl := v.ClCompile
-
-			vlist := strings.Split(matchedConfig, "|")
-			configuration := vlist[0]
-			platform := vlist[1]
-
-			willReplaceEnv := map[string]string{
-				"$(ProjectDir)":        pro.ProjectDir,
-				"$(Configuration)":     configuration,
-				"$(ConfigurationName)": configuration,
-				"$(Platform)":          platform,
-			}
-			for _, v := range os.Environ() {
-				kv := strings.Split(v, "=")
-				willReplaceEnv[fmt.Sprintf("$(%s)", kv[0])] = kv[1]
-			}
-
-			include := cl.AdditionalIncludeDirectories
-			def := cl.PreprocessorDefinitions
-			additionalOpts := cl.AdditionalOptions
-			usingDirs := cl.AdditionalUsingDirectories
-
-			// 处理所有字段的环境变量替换
-			for k, v := range willReplaceEnv {
-				if strings.Contains(include, k) {
-					include = strings.Replace(include, k, v, -1)
-				}
-				if strings.Contains(def, k) {
-					def = strings.Replace(def, k, v, -1)
-				}
-				if strings.Contains(additionalOpts, k) {
-					additionalOpts = strings.Replace(additionalOpts, k, v, -1)
-				}
-				if strings.Contains(usingDirs, k) {
-					usingDirs = strings.Replace(usingDirs, k, v, -1)
-				}
-			}
-
-			return include, def, additionalOpts, usingDirs, nil
+			include = cl.AdditionalIncludeDirectories
+			def = cl.PreprocessorDefinitions
+			additionalOpts = cl.AdditionalOptions
+			usingDirs = cl.AdditionalUsingDirectories
+			break
 		}
 	}
-	return "", "", "", "", errors.New("not found " + conf)
+
+	// 合并PropertyGroup和ItemDefinitionGroup中的include目录
+	if len(propertyIncludeDirs) > 0 {
+		if include != "" {
+			propertyIncludeDirs = append(propertyIncludeDirs, include)
+			include = MergeSemicolonSeparatedLists(propertyIncludeDirs...)
+		} else {
+			include = MergeSemicolonSeparatedLists(propertyIncludeDirs...)
+		}
+	}
+
+	// 处理所有字段的环境变量替换
+	for k, v := range willReplaceEnv {
+		if strings.Contains(include, k) {
+			include = strings.Replace(include, k, v, -1)
+		}
+		if strings.Contains(def, k) {
+			def = strings.Replace(def, k, v, -1)
+		}
+		if strings.Contains(additionalOpts, k) {
+			additionalOpts = strings.Replace(additionalOpts, k, v, -1)
+		}
+		if strings.Contains(usingDirs, k) {
+			usingDirs = strings.Replace(usingDirs, k, v, -1)
+		}
+	}
+
+	return include, def, additionalOpts, usingDirs, nil
 }
 
 // return include, definition,error
@@ -349,10 +382,24 @@ func (pro *Project) FindItemGroupConfigs(conf string) (string, string, string) {
 		strings.Join(extraOpts, ";")
 }
 
+// RemoveBadOptions 移除%(AdditionalOptions)引用
+func RemoveBadOptions(opts string) string {
+	for _, bad := range badOpts {
+		opts = strings.Replace(opts, bad, "", -1)
+	}
+	return opts
+}
+
 func RemoveBadInclude(include string) string {
 	for _, bad := range badInclude {
-		include = strings.Replace(include, bad, ";.", -1)
+		include = strings.Replace(include, bad, "", -1)
 	}
+	// 移除可能产生的多余分号
+	for strings.Contains(include, ";;") {
+		include = strings.Replace(include, ";;", ";", -1)
+	}
+	// 移除开头和结尾的分号
+	include = strings.Trim(include, ";")
 	return include
 }
 
@@ -360,6 +407,12 @@ func RemoveBadDefinition(def string) string {
 	for _, bad := range badDef {
 		def = strings.Replace(def, bad, "", -1)
 	}
+	// 移除可能产生的多余分号
+	for strings.Contains(def, ";;") {
+		def = strings.Replace(def, ";;", ";", -1)
+	}
+	// 移除开头和结尾的分号
+	def = strings.Trim(def, ";")
 	return def
 }
 
@@ -402,4 +455,19 @@ func MergeSemicolonSeparatedLists(lists ...string) string {
 // 合并多个include目录字符串（为了保持向后兼容）
 func MergeIncludeDirectories(dirs ...string) string {
 	return MergeSemicolonSeparatedLists(dirs...)
+}
+
+// 支持PropertyGroup和Import元素
+type PropertyGroup struct {
+	XMLName                      xml.Name `xml:"PropertyGroup"`
+	Condition                    string   `xml:"Condition,attr"`
+	Label                        string   `xml:"Label,attr"`
+	AdditionalIncludeDirectories string   `xml:"AdditionalIncludeDirectories"`
+	IncludeDirectories           string   `xml:"IncludeDirectories"`
+}
+
+type Import struct {
+	XMLName   xml.Name `xml:"Import"`
+	Project   string   `xml:"Project,attr"`
+	Condition string   `xml:"Condition,attr"`
 }

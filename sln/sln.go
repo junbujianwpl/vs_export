@@ -218,6 +218,8 @@ func (sln *Sln) CompileCommandsJson(conf string) ([]CompileCommand, error) {
 
 			// 处理额外编译选项
 			allOpts = strings.TrimSpace(allOpts)
+			// 移除%(AdditionalOptions)宏
+			allOpts = RemoveBadOptions(allOpts)
 
 			// 构建完整的编译命令
 			var cmdParts []string
