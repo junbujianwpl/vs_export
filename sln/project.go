@@ -156,6 +156,21 @@ func (pro *Project) FindConfigEnhanced(conf string) (string, string, string, str
 		}
 	}
 
+	// 如果仍未匹配，按配置名（忽略平台）查找第一个匹配项
+	if !found {
+		requestedParts := strings.Split(conf, "|")
+		requestedCfgName := strings.TrimSpace(requestedParts[0])
+		for _, v := range cfgList {
+			configParts := strings.Split(v.Include, "|")
+			if len(configParts) >= 1 && strings.EqualFold(strings.TrimSpace(configParts[0]), requestedCfgName) {
+				matchedConfig = v.Include
+				found = true
+				fmt.Fprintf(os.Stderr, "Warning: Configuration %s not found, using %s instead\n", conf, matchedConfig)
+				break
+			}
+		}
+	}
+
 	// 如果仍然没有找到匹配的配置，返回错误并列出可用配置
 	if !found {
 		return "", "", "", "", fmt.Errorf("%s:not found %s\nAvailable configurations: %v", pro.ProjectPath, conf, availableConfigs)
@@ -290,6 +305,21 @@ func (pro *Project) FindConfig(conf string) (string, string, error) {
 					fmt.Fprintf(os.Stderr, "Warning: Configuration %s not found, using %s instead\n", conf, matchedConfig)
 					break
 				}
+			}
+		}
+	}
+
+	// 如果仍未匹配，按配置名（忽略平台）查找第一个匹配项
+	if !found {
+		requestedParts := strings.Split(conf, "|")
+		requestedCfgName := strings.TrimSpace(requestedParts[0])
+		for _, v := range cfgList {
+			configParts := strings.Split(v.Include, "|")
+			if len(configParts) >= 1 && strings.EqualFold(strings.TrimSpace(configParts[0]), requestedCfgName) {
+				matchedConfig = v.Include
+				found = true
+				fmt.Fprintf(os.Stderr, "Warning: Configuration %s not found, using %s instead\n", conf, matchedConfig)
+				break
 			}
 		}
 	}
